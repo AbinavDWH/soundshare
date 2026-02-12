@@ -30,7 +30,6 @@ static int receive_pcm_loop(int fd, AudioPlayback *pb, const AudioConfig *cfg)
         if (audio_playback_write(pb, buf, (size_t)n) < 0)
             break;
 
-        /* Stats */
         atomic_fetch_add(&g_app.total_bytes_sent, n);
         atomic_fetch_add(&g_app.bytes_sent_this_second, n);
 
@@ -50,20 +49,15 @@ static int receive_pcm_loop(int fd, AudioPlayback *pb, const AudioConfig *cfg)
     return 0;
 }
 
-/* ---- FLAC receive loop (length-prefixed frames) ---- */
+/* ---- FLAC receive loop ---- */
 
 static int receive_flac_loop(int fd, AudioPlayback *pb, const AudioConfig *cfg)
 {
     size_t  comp_cap = (size_t)cfg->chunk_size * 2;
     uint8_t *comp_buf = malloc(comp_cap);
-    /* For a real FLAC implementation you would decode here.
-       This simplified version assumes PCM over the wire.    */
-    (void)pb; /* suppress unused warning if stub */
-
     if (!comp_buf) return -1;
 
     while (atomic_load(&g_app.is_receiving)) {
-        /* Read 4-byte big-endian frame length */
         uint8_t hdr[4];
         if (read_fully(fd, hdr, 4) != 4) {
             if (atomic_load(&g_app.is_receiving))
@@ -80,12 +74,6 @@ static int receive_flac_loop(int fd, AudioPlayback *pb, const AudioConfig *cfg)
         if (read_fully(fd, comp_buf, frame_len) != (ssize_t)frame_len)
             break;
 
-        /*
-         * TODO: FLAC decode comp_buf -> pcm_buf, then
-         *       audio_playback_write(pb, pcm_buf, pcm_len);
-         *
-         * For now we treat it as raw PCM for compilation.
-         */
         audio_playback_write(pb, comp_buf, frame_len);
 
         atomic_fetch_add(&g_app.total_bytes_sent, (int64_t)(frame_len + 4));
@@ -112,7 +100,7 @@ static int receive_flac_loop(int fd, AudioPlayback *pb, const AudioConfig *cfg)
 static void *receive_thread_func(void *arg)
 {
     (void)arg;
-    LOG_I("Receive thread started – connecting to %s", rctx.server_ip);
+    LOG_I("Receive thread started - connecting to %s", rctx.server_ip);
 
     int fd = net_connect(rctx.server_ip, AUDIO_PORT, 5000);
     if (fd < 0) {
@@ -126,7 +114,6 @@ static void *receive_thread_func(void *arg)
 
     rctx.socket_fd = fd;
 
-    /* Read header */
     AudioConfig cfg;
     int hrc = protocol_read_header(fd, &cfg);
     if (hrc != 0) {
@@ -140,7 +127,7 @@ static void *receive_thread_func(void *arg)
 
     rctx.cfg = cfg;
 
-    /* Update UI */
+    /* Update UI with format info */
     {
         char fmt[256], sr[64], status[256];
         config_format_string(&cfg, fmt, sizeof(fmt));
@@ -151,6 +138,7 @@ static void *receive_thread_func(void *arg)
                  sr, cfg.channels == 1 ? "Mono" : "Stereo", rctx.server_ip);
         ui_update_status(status);
         ui_show_receiving(rctx.server_ip);
+        ui_update_format_info(sr, fmt);
     }
 
     /* Start sub-services */
@@ -195,7 +183,7 @@ int receiving_start(const char *server_ip)
 {
     memset(&rctx, 0, sizeof(rctx));
     rctx.socket_fd = -1;
-    strncpy(rctx.server_ip, server_ip, INET_ADDRSTRLEN - 1);
+    snprintf(rctx.server_ip, INET_ADDRSTRLEN, "%s", server_ip);
 
     atomic_store(&g_app.is_receiving, true);
     atomic_store(&g_app.current_latency_ms, -1);

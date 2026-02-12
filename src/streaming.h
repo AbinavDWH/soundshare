@@ -15,14 +15,12 @@
 
 #define MAX_CLIENTS 16
 
-/* Per-client connection */
 typedef struct {
     int         fd;
     char        ip[INET_ADDRSTRLEN];
     atomic_bool connected;
 } ClientConn;
 
-/* Streaming context */
 typedef struct {
     AudioConfig     config;
     int             server_fd;

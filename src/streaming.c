@@ -12,8 +12,6 @@
 
 static StreamContext ctx;
 
-/* ---- helpers ---- */
-
 static void add_client(int fd, const char *ip)
 {
     pthread_mutex_lock(&ctx.clients_lock);
@@ -21,7 +19,6 @@ static void add_client(int fd, const char *ip)
         if (!atomic_load(&ctx.clients[i].connected)) {
             ctx.clients[i].fd = fd;
             snprintf(ctx.clients[i].ip, INET_ADDRSTRLEN, "%s", ip);
-            ctx.clients[i].ip[INET_ADDRSTRLEN - 1] = '\0';
             atomic_store(&ctx.clients[i].connected, true);
             ctx.client_count++;
             atomic_store(&g_app.receiver_count, ctx.client_count);
@@ -48,15 +45,12 @@ static void remove_client(int idx)
     ui_update_receiver_count(ctx.client_count);
 }
 
-/* ---- Accept thread ---- */
-
 static void *accept_thread_func(void *arg)
 {
     (void)arg;
     LOG_I("Accept thread started");
 
     while (atomic_load(&g_app.is_streaming)) {
-        /* Poll with timeout so we can check is_streaming */
         int ready = net_poll_read(ctx.server_fd, 1000);
         if (ready <= 0) continue;
 
@@ -66,7 +60,6 @@ static void *accept_thread_func(void *arg)
 
         net_set_audio_opts(client_fd, ctx.config.socket_buffer_size);
 
-        /* Send format header */
         if (protocol_write_header(client_fd, &ctx.config) < 0) {
             LOG_W("Failed to send header to %s", client_ip);
             close(client_fd);
@@ -84,8 +77,6 @@ static void *accept_thread_func(void *arg)
     LOG_I("Accept thread stopped");
     return NULL;
 }
-
-/* ---- Stream thread ---- */
 
 static void *stream_thread_func(void *arg)
 {
@@ -121,7 +112,6 @@ static void *stream_thread_func(void *arg)
             break;
         }
 
-        /* Send to every connected client */
         int active = 0;
         for (int i = 0; i < MAX_CLIENTS; i++) {
             if (!atomic_load(&ctx.clients[i].connected)) continue;
@@ -135,7 +125,6 @@ static void *stream_thread_func(void *arg)
 
         if (active == 0) continue;
 
-        /* Update stats */
         int64_t bytes = (int64_t)rd * active;
         atomic_fetch_add(&g_app.bytes_sent_this_second, bytes);
         atomic_fetch_add(&g_app.total_bytes_sent, bytes);
@@ -159,8 +148,6 @@ static void *stream_thread_func(void *arg)
     return NULL;
 }
 
-/* ---- Public API ---- */
-
 int streaming_start(int preset_index)
 {
     memset(&ctx, 0, sizeof(ctx));
@@ -173,7 +160,6 @@ int streaming_start(int preset_index)
 
     config_load_preset(&ctx.config, preset_index);
 
-    /* Create server socket */
     ctx.server_fd = net_create_server(AUDIO_PORT, 8);
     if (ctx.server_fd < 0) {
         ui_update_status("Failed to bind audio port");
@@ -184,23 +170,21 @@ int streaming_start(int preset_index)
     atomic_store(&g_app.receiver_count, 0);
     atomic_store(&g_app.current_latency_ms, -1);
 
-    /* Format info for UI */
-    char fmt[256];
+    char fmt[256], sr[64];
     config_format_string(&ctx.config, fmt, sizeof(fmt));
+    config_sample_rate_string(&ctx.config, sr, sizeof(sr));
     ui_show_streaming(fmt);
+    ui_update_format_info(sr, fmt);
 
-    char status[256];
-    char ip[64];
+    char status[256], ip[64];
     net_get_device_ip(ip, sizeof(ip));
     snprintf(status, sizeof(status),
-             "Streaming on %s:%d – waiting for receivers...", ip, AUDIO_PORT);
+             "Streaming on %s:%d - waiting for receivers...", ip, AUDIO_PORT);
     ui_update_status(status);
 
-    /* Start sub-services */
     ping_server_start();
     chat_server_start();
 
-    /* Launch threads */
     ctx.accept_running = true;
     ctx.stream_running = true;
 
@@ -222,19 +206,15 @@ int streaming_start(int preset_index)
 void streaming_stop(void)
 {
     if (!atomic_exchange(&g_app.is_streaming, false))
-        return;     /* already stopped */
+        return;
 
     LOG_I("Stopping streaming...");
     ui_update_status("Stopping...");
 
-    /* Stop sub-services */
     ping_server_stop();
     chat_server_stop();
-
-    /* Close server socket to unblock accept */
     net_close(&ctx.server_fd);
 
-    /* Close all clients */
     pthread_mutex_lock(&ctx.clients_lock);
     for (int i = 0; i < MAX_CLIENTS; i++) {
         if (atomic_load(&ctx.clients[i].connected)) {
@@ -245,7 +225,6 @@ void streaming_stop(void)
     ctx.client_count = 0;
     pthread_mutex_unlock(&ctx.clients_lock);
 
-    /* Join threads */
     if (ctx.accept_running) {
         pthread_join(ctx.accept_thread, NULL);
         ctx.accept_running = false;

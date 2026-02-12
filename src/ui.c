@@ -3,8 +3,6 @@
 #include "network.h"
 #include "streaming.h"
 #include "receiving.h"
-#include "receiving.h"
-#include "receiving.h"
 #include "chat.h"
 
 #include <string.h>
@@ -35,14 +33,7 @@ static struct {
     GtkWidget *lbl_chat_status;
 } ui;
 
-/* ---- Thread-safe UI update helpers ---- */
-
-typedef struct {
-    char text[512];
-} TextUpdate;
-
-
-/* Typed idle-callback data */
+/* ---- Typed idle-callback data ---- */
 typedef struct {
     GtkWidget *label;
     char       text[512];
@@ -66,6 +57,30 @@ static void set_label_threadsafe(GtkWidget *label, const char *text)
     g_idle_add(update_label_idle, u);
 }
 
+/* Button label update */
+typedef struct {
+    GtkWidget *button;
+    char       text[256];
+} ButtonUpdate;
+
+static gboolean update_button_idle(gpointer data)
+{
+    ButtonUpdate *u = (ButtonUpdate *)data;
+    if (GTK_IS_BUTTON(u->button))
+        gtk_button_set_label(GTK_BUTTON(u->button), u->text);
+    free(u);
+    return G_SOURCE_REMOVE;
+}
+
+static void set_button_label_threadsafe(GtkWidget *button, const char *text)
+{
+    ButtonUpdate *u = malloc(sizeof(*u));
+    if (!u) return;
+    u->button = button;
+    snprintf(u->text, sizeof(u->text), "%s", text);
+    g_idle_add(update_button_idle, u);
+}
+
 /* Sensitivity update */
 typedef struct {
     GtkWidget *widget;
@@ -83,6 +98,7 @@ static gboolean update_sens_idle(gpointer data)
 static void set_sensitive_threadsafe(GtkWidget *w, gboolean s)
 {
     SensUpdate *u = malloc(sizeof(*u));
+    if (!u) return;
     u->widget = w; u->sensitive = s;
     g_idle_add(update_sens_idle, u);
 }
@@ -105,6 +121,7 @@ static gboolean update_vis_idle(gpointer data)
 static void set_visible_threadsafe(GtkWidget *w, gboolean v)
 {
     VisUpdate *u = malloc(sizeof(*u));
+    if (!u) return;
     u->widget = w; u->visible = v;
     g_idle_add(update_vis_idle, u);
 }
@@ -131,7 +148,6 @@ static gboolean append_chat_idle(gpointer data)
 
     gtk_text_buffer_insert(ui.chat_buffer, &end, line, -1);
 
-    /* Scroll to bottom */
     GtkTextMark *mark = gtk_text_buffer_get_mark(ui.chat_buffer, "end");
     if (!mark) {
         gtk_text_buffer_get_end_iter(ui.chat_buffer, &end);
@@ -147,7 +163,8 @@ static gboolean append_chat_idle(gpointer data)
 
 /* ---- Public thread-safe API ---- */
 
-void ui_update_status(const char *msg) {
+void ui_update_status(const char *msg)
+{
     set_label_threadsafe(ui.lbl_status, msg);
 }
 
@@ -164,6 +181,14 @@ void ui_update_receiver_count(int count)
     char buf[32];
     snprintf(buf, sizeof(buf), "%d", count);
     set_label_threadsafe(ui.lbl_receivers, buf);
+}
+
+void ui_update_format_info(const char *sample_rate, const char *format)
+{
+    if (sample_rate)
+        set_label_threadsafe(ui.lbl_sample_rate, sample_rate);
+    if (format)
+        set_label_threadsafe(ui.lbl_format, format);
 }
 
 void ui_update_stats(int64_t kbps, int64_t total_bytes, int64_t elapsed_ms)
@@ -203,7 +228,7 @@ void ui_update_stats(int64_t kbps, int64_t total_bytes, int64_t elapsed_ms)
 
 void ui_show_streaming(const char *format_info)
 {
-    set_label_threadsafe(ui.lbl_format, format_info);
+    set_label_threadsafe(ui.lbl_format, format_info ? format_info : "");
     set_visible_threadsafe(ui.stats_box, TRUE);
     set_visible_threadsafe(ui.chat_box, TRUE);
     set_label_threadsafe(ui.lbl_bitrate, "0 kbps");
@@ -211,9 +236,11 @@ void ui_show_streaming(const char *format_info)
     set_label_threadsafe(ui.lbl_duration, "00:00");
     set_label_threadsafe(ui.lbl_receivers, "0");
     set_label_threadsafe(ui.lbl_latency, "Waiting...");
+    set_label_threadsafe(ui.lbl_connection, "Waiting for receivers...");
     set_sensitive_threadsafe(ui.btn_receive, FALSE);
     set_sensitive_threadsafe(ui.entry_ip, FALSE);
     set_sensitive_threadsafe(ui.combo_quality, FALSE);
+    set_button_label_threadsafe(ui.btn_stream, "Stop Streaming");
 }
 
 void ui_show_receiving(const char *server_ip)
@@ -223,9 +250,15 @@ void ui_show_receiving(const char *server_ip)
     set_label_threadsafe(ui.lbl_connection, buf);
     set_visible_threadsafe(ui.stats_box, TRUE);
     set_visible_threadsafe(ui.chat_box, TRUE);
+    set_label_threadsafe(ui.lbl_bitrate, "0 kbps");
+    set_label_threadsafe(ui.lbl_total, "0 B");
+    set_label_threadsafe(ui.lbl_duration, "00:00");
+    set_label_threadsafe(ui.lbl_receivers, "--");
+    set_label_threadsafe(ui.lbl_latency, "Waiting...");
     set_sensitive_threadsafe(ui.btn_stream, FALSE);
     set_sensitive_threadsafe(ui.entry_ip, FALSE);
     set_sensitive_threadsafe(ui.combo_quality, FALSE);
+    set_button_label_threadsafe(ui.btn_receive, "Stop Receiving");
 }
 
 void ui_reset(void)
@@ -237,17 +270,16 @@ void ui_reset(void)
     set_sensitive_threadsafe(ui.entry_ip, TRUE);
     set_sensitive_threadsafe(ui.combo_quality, TRUE);
     set_label_threadsafe(ui.lbl_connection, "");
-
-    /* Restore button labels */
-    LabelUpdate *u1 = malloc(sizeof(*u1));
-    u1->label = ui.btn_stream;
-    snprintf(u1->text, sizeof(u1->text), "Start Streaming");
-    g_idle_add(update_label_idle, u1);
+    set_label_threadsafe(ui.lbl_sample_rate, "");
+    set_label_threadsafe(ui.lbl_format, "");
+    set_button_label_threadsafe(ui.btn_stream, "Start Streaming");
+    set_button_label_threadsafe(ui.btn_receive, "Start Receiving");
 }
 
 void ui_add_chat_message(const char *sender, const char *text, int type)
 {
     ChatUpdate *u = malloc(sizeof(*u));
+    if (!u) return;
     snprintf(u->sender, sizeof(u->sender), "%s", sender ? sender : "");
     snprintf(u->message, sizeof(u->message), "%s", text ? text : "");
     u->type = type;
@@ -274,7 +306,6 @@ static void on_stream_clicked(GtkWidget *w, gpointer data)
 
     if (atomic_load(&g_app.is_streaming)) {
         streaming_stop();
-        gtk_button_set_label(GTK_BUTTON(ui.btn_stream), "Start Streaming");
         return;
     }
 
@@ -282,7 +313,6 @@ static void on_stream_clicked(GtkWidget *w, gpointer data)
     if (idx < 0) idx = 2;
     g_app.selected_preset = idx;
 
-    gtk_button_set_label(GTK_BUTTON(ui.btn_stream), "Stop Streaming");
     streaming_start(idx);
 }
 
@@ -292,7 +322,6 @@ static void on_receive_clicked(GtkWidget *w, gpointer data)
 
     if (atomic_load(&g_app.is_receiving)) {
         receiving_stop();
-        gtk_button_set_label(GTK_BUTTON(ui.btn_receive), "Start Receiving");
         return;
     }
 
@@ -302,7 +331,6 @@ static void on_receive_clicked(GtkWidget *w, gpointer data)
         return;
     }
 
-    gtk_button_set_label(GTK_BUTTON(ui.btn_receive), "Stop Receiving");
     receiving_start(ip);
 }
 
@@ -313,10 +341,8 @@ static void on_chat_send(GtkWidget *w, gpointer data)
     const char *text = gtk_entry_get_text(GTK_ENTRY(ui.chat_entry));
     if (!text || strlen(text) == 0) return;
 
-    /* Show locally */
     ui_add_chat_message("You", text, CHAT_TYPE_SENT);
 
-    /* Send over network */
     if (atomic_load(&g_app.is_streaming)) {
         chat_server_broadcast("Host", text);
     } else if (atomic_load(&g_app.is_receiving)) {
@@ -360,10 +386,10 @@ static GtkWidget *make_label(const char *text, const char *css_class)
 static GtkWidget *make_stat_row(const char *title, GtkWidget **value_label)
 {
     GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-    GtkWidget *lbl_title = make_label(title, NULL);
-    *value_label = make_label("—", NULL);
+    GtkWidget *lbl_title = make_label(title, "stat-title");
+    *value_label = make_label("--", "stat-value");
 
-    gtk_widget_set_size_request(lbl_title, 120, -1);
+    gtk_widget_set_size_request(lbl_title, 130, -1);
     gtk_box_pack_start(GTK_BOX(hbox), lbl_title, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(hbox), *value_label, TRUE, TRUE, 0);
 
@@ -372,34 +398,37 @@ static GtkWidget *make_stat_row(const char *title, GtkWidget **value_label)
 
 static void build_ui(void)
 {
-    /* ---- Window ---- */
+    /* Window */
     ui.window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(ui.window), "SoundShare");
-    gtk_window_set_default_size(GTK_WINDOW(ui.window), 500, 700);
+    gtk_window_set_default_size(GTK_WINDOW(ui.window), 520, 750);
     g_signal_connect(ui.window, "destroy", G_CALLBACK(on_window_destroy), NULL);
 
-    /* ---- CSS ---- */
+    /* CSS */
     GtkCssProvider *css = gtk_css_provider_new();
     gtk_css_provider_load_from_data(css,
         "window { background-color: #1a1a2e; }"
-        "label  { color: #e0e0e0; font-family: monospace; }"
-        ".title { font-size: 18px; font-weight: bold; color: #00d4ff; }"
+        "label  { color: #e0e0e0; font-family: 'Noto Sans Mono', monospace; font-size: 12px; }"
+        ".title { font-size: 20px; font-weight: bold; color: #00d4ff; }"
+        ".subtitle { font-size: 14px; color: #888888; }"
         ".status { color: #aaaaaa; font-size: 12px; }"
-        ".ip    { font-size: 16px; font-weight: bold; color: #00ff88; }"
+        ".ip    { font-size: 18px; font-weight: bold; color: #00ff88; }"
         "button { background: #16213e; color: #e0e0e0; border: 1px solid #0f3460;"
-        "         padding: 8px 16px; border-radius: 6px; }"
+        "         padding: 10px 18px; border-radius: 6px; font-weight: bold; }"
         "button:hover { background: #0f3460; }"
-        ".stream-btn { background: #00cc66; color: #000000; font-weight: bold; }"
-        ".receive-btn { background: #0088ff; color: #ffffff; font-weight: bold; }"
-        ".stop-btn { background: #ff4444; color: #ffffff; }"
+        ".stream-btn { background: #00cc66; color: #000000; }"
+        ".stream-btn:hover { background: #00aa55; }"
+        ".receive-btn { background: #0088ff; color: #ffffff; }"
+        ".receive-btn:hover { background: #0066cc; }"
         "entry  { background: #16213e; color: #e0e0e0; border: 1px solid #0f3460;"
-        "         padding: 6px; border-radius: 4px; }"
-        "combobox button { background: #16213e; }"
+        "         padding: 8px; border-radius: 4px; font-family: monospace; }"
+        "combobox button { background: #16213e; padding: 6px; }"
         "textview { background-color: #0d1117; color: #c9d1d9; font-family: monospace;"
-        "           font-size: 11px; }"
-        ".stat-value { color: #00d4ff; font-weight: bold; }"
-        ".card { background: #16213e; border: 1px solid #0f3460; border-radius: 8px;"
-        "        padding: 12px; margin: 4px; }",
+        "           font-size: 11px; padding: 8px; }"
+        ".stat-title { color: #888888; font-size: 12px; }"
+        ".stat-value { color: #00d4ff; font-weight: bold; font-size: 13px; }"
+        ".section-title { font-size: 14px; font-weight: bold; color: #ff9800; margin-top: 8px; }"
+        ".card { background: #16213e; border-radius: 8px; padding: 12px; margin: 4px 0px; }",
         -1, NULL);
     gtk_style_context_add_provider_for_screen(
         gdk_screen_get_default(),
@@ -407,33 +436,40 @@ static void build_ui(void)
         GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
     g_object_unref(css);
 
-    /* ---- Main layout ---- */
+    /* Main layout */
     GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
                                    GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
     gtk_container_add(GTK_CONTAINER(ui.window), scroll);
 
-    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
     gtk_container_set_border_width(GTK_CONTAINER(vbox), 16);
     gtk_container_add(GTK_CONTAINER(scroll), vbox);
 
     /* Title */
-    GtkWidget *title = make_label("🔊 SoundShare", "title");
+    GtkWidget *title = make_label("SoundShare", "title");
     gtk_label_set_xalign(GTK_LABEL(title), 0.5);
-    gtk_box_pack_start(GTK_BOX(vbox), title, FALSE, FALSE, 4);
+    gtk_box_pack_start(GTK_BOX(vbox), title, FALSE, FALSE, 2);
+
+    GtkWidget *subtitle = make_label("Stream System Audio Over Network", "subtitle");
+    gtk_label_set_xalign(GTK_LABEL(subtitle), 0.5);
+    gtk_box_pack_start(GTK_BOX(vbox), subtitle, FALSE, FALSE, 2);
+
+    /* Separator */
+    gtk_box_pack_start(GTK_BOX(vbox), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), FALSE, FALSE, 6);
 
     /* Device IP */
     GtkWidget *ip_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     gtk_box_pack_start(GTK_BOX(ip_box), make_label("Device IP:", NULL), FALSE, FALSE, 0);
     ui.lbl_device_ip = make_label("Loading...", "ip");
     gtk_box_pack_start(GTK_BOX(ip_box), ui.lbl_device_ip, TRUE, TRUE, 0);
-
-    GtkWidget *btn_copy = gtk_button_new_with_label("📋");
+    GtkWidget *btn_copy = gtk_button_new_with_label("Copy");
     g_signal_connect(btn_copy, "clicked", G_CALLBACK(on_ip_copy), NULL);
     gtk_box_pack_end(GTK_BOX(ip_box), btn_copy, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), ip_box, FALSE, FALSE, 4);
 
     /* Quality selector */
+    gtk_box_pack_start(GTK_BOX(vbox), make_label("Audio Quality:", NULL), FALSE, FALSE, 2);
     ui.combo_quality = gtk_combo_box_text_new();
     for (int i = 0; i < NUM_PRESETS; i++)
         gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(ui.combo_quality),
@@ -441,10 +477,19 @@ static void build_ui(void)
     gtk_combo_box_set_active(GTK_COMBO_BOX(ui.combo_quality), 2);
     gtk_box_pack_start(GTK_BOX(vbox), ui.combo_quality, FALSE, FALSE, 4);
 
+    /* IP input */
+    GtkWidget *ip_input_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_box_pack_start(GTK_BOX(ip_input_box),
+                       make_label("Streamer IP:", NULL), FALSE, FALSE, 0);
+    ui.entry_ip = gtk_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(ui.entry_ip), "192.168.1.x");
+    gtk_box_pack_start(GTK_BOX(ip_input_box), ui.entry_ip, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), ip_input_box, FALSE, FALSE, 4);
+
     /* Buttons */
     GtkWidget *btn_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-    ui.btn_stream = gtk_button_new_with_label("▶ Start Streaming");
-    ui.btn_receive = gtk_button_new_with_label("📥 Start Receiving");
+    ui.btn_stream = gtk_button_new_with_label("Start Streaming");
+    ui.btn_receive = gtk_button_new_with_label("Start Receiving");
 
     GtkStyleContext *sc;
     sc = gtk_widget_get_style_context(ui.btn_stream);
@@ -457,16 +502,7 @@ static void build_ui(void)
 
     gtk_box_pack_start(GTK_BOX(btn_box), ui.btn_stream, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(btn_box), ui.btn_receive, TRUE, TRUE, 0);
-    gtk_box_pack_start(GTK_BOX(vbox), btn_box, FALSE, FALSE, 4);
-
-    /* IP input */
-    GtkWidget *ip_input_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-    gtk_box_pack_start(GTK_BOX(ip_input_box),
-                       make_label("Streamer IP:", NULL), FALSE, FALSE, 0);
-    ui.entry_ip = gtk_entry_new();
-    gtk_entry_set_placeholder_text(GTK_ENTRY(ui.entry_ip), "192.168.1.x");
-    gtk_box_pack_start(GTK_BOX(ip_input_box), ui.entry_ip, TRUE, TRUE, 0);
-    gtk_box_pack_start(GTK_BOX(vbox), ip_input_box, FALSE, FALSE, 4);
+    gtk_box_pack_start(GTK_BOX(vbox), btn_box, FALSE, FALSE, 6);
 
     /* Status */
     ui.lbl_status = make_label("Ready", "status");
@@ -478,27 +514,30 @@ static void build_ui(void)
     gtk_style_context_add_class(sc, "card");
 
     gtk_box_pack_start(GTK_BOX(ui.stats_box),
-                       make_label("📊 Stream Statistics", "title"), FALSE, FALSE, 4);
+                       make_label("Stream Statistics", "section-title"), FALSE, FALSE, 4);
+    gtk_box_pack_start(GTK_BOX(ui.stats_box),
+                       gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), FALSE, FALSE, 2);
 
     gtk_box_pack_start(GTK_BOX(ui.stats_box),
-                       make_stat_row("Bitrate:",     &ui.lbl_bitrate),    FALSE, FALSE, 2);
+                       make_stat_row("Sample Rate:", &ui.lbl_sample_rate), FALSE, FALSE, 2);
     gtk_box_pack_start(GTK_BOX(ui.stats_box),
-                       make_stat_row("Total Sent:",  &ui.lbl_total),      FALSE, FALSE, 2);
+                       make_stat_row("Format:", &ui.lbl_format), FALSE, FALSE, 2);
     gtk_box_pack_start(GTK_BOX(ui.stats_box),
-                       make_stat_row("Duration:",    &ui.lbl_duration),   FALSE, FALSE, 2);
+                       gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), FALSE, FALSE, 2);
     gtk_box_pack_start(GTK_BOX(ui.stats_box),
-                       make_stat_row("Sample Rate:", &ui.lbl_sample_rate),FALSE, FALSE, 2);
+                       make_stat_row("Bitrate:", &ui.lbl_bitrate), FALSE, FALSE, 2);
     gtk_box_pack_start(GTK_BOX(ui.stats_box),
-                       make_stat_row("Format:",      &ui.lbl_format),     FALSE, FALSE, 2);
+                       make_stat_row("Total Sent:", &ui.lbl_total), FALSE, FALSE, 2);
     gtk_box_pack_start(GTK_BOX(ui.stats_box),
-                       make_stat_row("Connection:",  &ui.lbl_connection), FALSE, FALSE, 2);
+                       make_stat_row("Duration:", &ui.lbl_duration), FALSE, FALSE, 2);
     gtk_box_pack_start(GTK_BOX(ui.stats_box),
-                       make_stat_row("Receivers:",   &ui.lbl_receivers),  FALSE, FALSE, 2);
+                       make_stat_row("Connection:", &ui.lbl_connection), FALSE, FALSE, 2);
     gtk_box_pack_start(GTK_BOX(ui.stats_box),
-                       make_stat_row("Latency:",     &ui.lbl_latency),    FALSE, FALSE, 2);
+                       make_stat_row("Receivers:", &ui.lbl_receivers), FALSE, FALSE, 2);
+    gtk_box_pack_start(GTK_BOX(ui.stats_box),
+                       make_stat_row("Latency:", &ui.lbl_latency), FALSE, FALSE, 2);
 
     gtk_box_pack_start(GTK_BOX(vbox), ui.stats_box, FALSE, FALSE, 4);
-    gtk_widget_hide(ui.stats_box);
 
     /* ---- Chat box ---- */
     ui.chat_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
@@ -506,12 +545,11 @@ static void build_ui(void)
     gtk_style_context_add_class(sc, "card");
 
     gtk_box_pack_start(GTK_BOX(ui.chat_box),
-                       make_label("💬 Chat", "title"), FALSE, FALSE, 4);
+                       make_label("Chat", "section-title"), FALSE, FALSE, 4);
 
     ui.lbl_chat_status = make_label("Disconnected", "status");
     gtk_box_pack_start(GTK_BOX(ui.chat_box), ui.lbl_chat_status, FALSE, FALSE, 2);
 
-    /* Chat text view */
     GtkWidget *chat_scroll = gtk_scrolled_window_new(NULL, NULL);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(chat_scroll),
                                    GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
@@ -524,38 +562,34 @@ static void build_ui(void)
     gtk_container_add(GTK_CONTAINER(chat_scroll), ui.chat_view);
     gtk_box_pack_start(GTK_BOX(ui.chat_box), chat_scroll, TRUE, TRUE, 4);
 
-    /* Chat input */
     GtkWidget *chat_input_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
     ui.chat_entry = gtk_entry_new();
     gtk_entry_set_placeholder_text(GTK_ENTRY(ui.chat_entry), "Type a message...");
     g_signal_connect(ui.chat_entry, "activate", G_CALLBACK(on_chat_send), NULL);
-
     ui.btn_chat_send = gtk_button_new_with_label("Send");
     g_signal_connect(ui.btn_chat_send, "clicked", G_CALLBACK(on_chat_send), NULL);
-
     gtk_box_pack_start(GTK_BOX(chat_input_box), ui.chat_entry, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(chat_input_box), ui.btn_chat_send, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(ui.chat_box), chat_input_box, FALSE, FALSE, 4);
 
     gtk_box_pack_start(GTK_BOX(vbox), ui.chat_box, FALSE, FALSE, 4);
-    gtk_widget_hide(ui.chat_box);
 
-    /* ---- Show device IP ---- */
+    /* Set device IP */
     char ip[64];
     if (net_get_device_ip(ip, sizeof(ip)) == 0)
         gtk_label_set_text(GTK_LABEL(ui.lbl_device_ip), ip);
     else
         gtk_label_set_text(GTK_LABEL(ui.lbl_device_ip), "Not connected");
 
-    /* ---- Register chat callback ---- */
+    /* Register chat callback */
     chat_set_callback(on_chat_received, NULL);
 
+    /* Show window, hide stats and chat */
     gtk_widget_show_all(ui.window);
     gtk_widget_hide(ui.stats_box);
     gtk_widget_hide(ui.chat_box);
 }
 
-/* ---- Entry point ---- */
 int ui_run(int argc, char **argv)
 {
     gtk_init(&argc, &argv);

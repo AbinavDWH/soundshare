@@ -3,9 +3,7 @@
  * before ANY #include (even our own headers)
  */
 #ifndef _GNU_SOURCE
-#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
-#endif
 #endif
 #define _POSIX_C_SOURCE 200809L
 
