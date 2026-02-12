@@ -1,0 +1,3 @@
+/home/abinav/Program/soundshare/build/CMakeFiles/soundshare.dir
+/home/abinav/Program/soundshare/build/CMakeFiles/edit_cache.dir
+/home/abinav/Program/soundshare/build/CMakeFiles/rebuild_cache.dir
